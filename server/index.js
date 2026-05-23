@@ -6,51 +6,168 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 dotenv.config();
 
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 
-// Initialize Gemini API
+/*
+|--------------------------------------------------------------------------
+| Validate Environment Variables
+|--------------------------------------------------------------------------
+*/
+
+if (!process.env.GEMINI_API_KEY) {
+    console.error('Missing GEMINI_API_KEY in .env');
+    process.exit(1);
+}
+
+/*
+|--------------------------------------------------------------------------
+| Initialize Gemini
+|--------------------------------------------------------------------------
+*/
+
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+/*
+|--------------------------------------------------------------------------
+| Health Check Route
+|--------------------------------------------------------------------------
+*/
+
+app.get('/', (req, res) => {
+    res.json({
+        success: true,
+        message: 'AI Interview Generator API is running'
+    });
+});
+
+/*
+|--------------------------------------------------------------------------
+| Generate Interview Questions
+|--------------------------------------------------------------------------
+*/
 
 app.post('/api/generate', async (req, res) => {
     try {
-        const { jobTitle } = req.body;
+        let { jobTitle } = req.body;
 
-        // Validation: non-empty, sanitized, 2–100 chars [cite: 5]
-        if (!jobTitle || jobTitle.trim().length < 2 || jobTitle.trim().length > 100) {
-            return res.status(400).json({ error: "Job title must be between 2 and 100 characters." });
+        /*
+        |--------------------------------------------------------------------------
+        | Validation
+        |--------------------------------------------------------------------------
+        */
+
+        if (!jobTitle || typeof jobTitle !== 'string') {
+            return res.status(400).json({
+                error: 'Job title is required.'
+            });
         }
 
-        // Use Gemini 1.5 Flash 
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        // Trim whitespace
+        jobTitle = jobTitle.trim();
 
-        // Suggested Prompt [cite: 6, 7]
-        const prompt = `You are an expert hiring manager. Generate 3 thoughtful and role-specific interview questions for the following position: 
-        Job Title: ${jobTitle} 
-        Requirements: 
-        - Questions should assess practical ability 
-        - Questions should be concise 
-        - Questions should not be generic 
-        - Return only the questions as a numbered list.`;
+        // Length validation
+        if (jobTitle.length < 2 || jobTitle.length > 100) {
+            return res.status(400).json({
+                error: 'Job title must be between 2 and 100 characters.'
+            });
+        }
+
+        // Basic sanitization
+        jobTitle = jobTitle.replace(/[<>]/g, '');
+
+        /*
+        |--------------------------------------------------------------------------
+        | Gemini Model
+        |--------------------------------------------------------------------------
+        */
+
+        const model = genAI.getGenerativeModel({
+            model: "gemini-1.5-flash-latest"
+        });
+
+        /*
+        |--------------------------------------------------------------------------
+        | Prompt
+        |--------------------------------------------------------------------------
+        */
+
+        const prompt = `
+You are an expert hiring manager.
+
+Generate exactly 3 thoughtful and role-specific interview questions for this role:
+
+"${jobTitle}"
+
+Rules:
+- Questions must assess practical ability
+- Questions must be concise
+- Questions must not be generic
+- Return ONLY the questions
+- Use a numbered list
+`;
+
+        /*
+        |--------------------------------------------------------------------------
+        | Generate Content
+        |--------------------------------------------------------------------------
+        */
 
         const result = await model.generateContent(prompt);
-        const responseText = result.response.text();
 
-        // Parse the numbered list into an array for the structured response [cite: 9, 10]
-        const questionsArray = responseText
+        const response = await result.response;
+
+        const text = response.text();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Parse Questions
+        |--------------------------------------------------------------------------
+        */
+
+        const questionsArray = text
             .split('\n')
-            .filter(line => line.trim() !== '')
-            .map(line => line.replace(/^\d+\.\s*/, '').trim());
+            .map(line => line.trim())
+            .filter(line => line.length > 0)
+            .map(line =>
+                line
+                    .replace(/^\d+\.\s*/, '')
+                    .replace(/^[-*]\s*/, '')
+                    .trim()
+            )
+            .filter(line => line.length > 0);
 
-        res.json({ questions: questionsArray });
+        /*
+        |--------------------------------------------------------------------------
+        | Response
+        |--------------------------------------------------------------------------
+        */
+
+        return res.json({
+            success: true,
+            jobTitle,
+            questions: questionsArray
+        });
 
     } catch (error) {
-        console.error("AI Generation Error:", error);
-        res.status(500).json({ error: "Failed to generate questions. Please try again later." });
+        console.error('AI Generation Error:', error);
+
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to generate interview questions.'
+        });
     }
 });
 
+/*
+|--------------------------------------------------------------------------
+| Start Server
+|--------------------------------------------------------------------------
+*/
+
 const PORT = process.env.PORT || 5000;
+
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
