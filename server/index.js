@@ -85,6 +85,7 @@ app.post('/api/generate', async (req, res) => {
 
         const model = genAI.getGenerativeModel({
             model: "google/gemini-flash-1.5"
+            //model: "gemini-1.5-flash-001"
         });
 
         /*
