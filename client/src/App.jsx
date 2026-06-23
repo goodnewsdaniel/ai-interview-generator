@@ -1,5 +1,28 @@
 import { useState } from 'react';
 
+const getApiUrl = () => {
+  const configuredUrl = import.meta.env.VITE_API_URL?.trim();
+  const fallbackUrl = import.meta.env.DEV ? 'http://localhost:5000/api' : '/api';
+
+  return (configuredUrl || fallbackUrl).replace(/\/+$/, '');
+};
+
+const readApiResponse = async (response) => {
+  const contentType = response.headers.get('content-type') || '';
+
+  if (contentType.includes('application/json')) {
+    return response.json();
+  }
+
+  const text = await response.text();
+
+  if (!response.ok) {
+    throw new Error(text || `Request failed with status ${response.status}`);
+  }
+
+  throw new Error('API returned an unexpected response format.');
+};
+
 function App() {
   const [jobTitle, setJobTitle] = useState('');
   const [questions, setQuestions] = useState([]);
@@ -8,28 +31,44 @@ function App() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    if (loading) {
+      return;
+    }
+
+    const trimmedJobTitle = jobTitle.trim();
+
+    if (trimmedJobTitle.length < 2) {
+      setError('Job title must be at least 2 characters.');
+      setQuestions([]);
+      return;
+    }
+
     setLoading(true);
     setError('');
     setQuestions([]);
 
     try {
-      // Fetching from backend API 
-      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+      const apiUrl = getApiUrl();
       const response = await fetch(`${apiUrl}/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jobTitle })
+        body: JSON.stringify({ jobTitle: trimmedJobTitle })
       });
 
-      const data = await response.json();
+      const data = await readApiResponse(response);
 
       if (!response.ok) {
         throw new Error(data.error || 'Something went wrong');
       }
 
+      if (!Array.isArray(data.questions)) {
+        throw new Error('API returned an unexpected response format.');
+      }
+
       setQuestions(data.questions);
     } catch (err) {
-      setError(err.message);
+      setError(err instanceof Error ? err.message : 'Failed to generate questions.');
     } finally {
       setLoading(false);
     }
@@ -57,6 +96,7 @@ function App() {
               required
               minLength={2}
               maxLength={100}
+              disabled={loading}
               className="appearance-none rounded relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
               placeholder="Enter a job title (e.g., Customer Success Manager)" 
               value={jobTitle}
@@ -67,7 +107,7 @@ function App() {
           <div>
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || jobTitle.trim().length < 2}
               className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
             >
               {loading ? 'Generating...' : 'Generate Questions'}
@@ -77,7 +117,7 @@ function App() {
 
         {/* Results & Error Handling Display [cite: 5, 12] */}
         {error && (
-          <div className="text-red-500 text-sm text-center mt-4">{error}</div>
+          <div className="text-red-500 text-sm text-center mt-4" role="alert">{error}</div>
         )}
 
         {questions.length > 0 && (

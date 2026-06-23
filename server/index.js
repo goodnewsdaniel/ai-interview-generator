@@ -8,7 +8,7 @@ dotenv.config();
 const app = express();
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10kb' }));
 
 /*
 |--------------------------------------------------------------------------
@@ -28,6 +28,28 @@ if (!process.env.GEMINI_API_KEY) {
 */
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+
+const sanitizeJobTitle = (value) =>
+    value
+        .trim()
+        .replace(/[<>]/g, '')
+        .replace(/[\u0000-\u001F\u007F]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+const parseQuestions = (text) =>
+    text
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean)
+        .map(line =>
+            line
+                .replace(/^(\d+[\.)]|[-*])\s*/, '')
+                .trim()
+        )
+        .filter(Boolean)
+        .slice(0, 3);
 
 /*
 |--------------------------------------------------------------------------
@@ -50,7 +72,7 @@ app.get('/', (req, res) => {
 
 app.post('/api/generate', async (req, res) => {
     try {
-        let { jobTitle } = req.body;
+        const { jobTitle } = req.body ?? {};
 
         /*
         |--------------------------------------------------------------------------
@@ -58,24 +80,20 @@ app.post('/api/generate', async (req, res) => {
         |--------------------------------------------------------------------------
         */
 
-        if (!jobTitle || typeof jobTitle !== 'string') {
+        if (typeof jobTitle !== 'string') {
             return res.status(400).json({
                 error: 'Job title is required.'
             });
         }
 
-        // Trim whitespace
-        jobTitle = jobTitle.trim();
+        const sanitizedJobTitle = sanitizeJobTitle(jobTitle);
 
         // Length validation
-        if (jobTitle.length < 2 || jobTitle.length > 100) {
+        if (sanitizedJobTitle.length < 2 || sanitizedJobTitle.length > 100) {
             return res.status(400).json({
                 error: 'Job title must be between 2 and 100 characters.'
             });
         }
-
-        // Basic sanitization
-        jobTitle = jobTitle.replace(/[<>]/g, '');
 
         /*
         |--------------------------------------------------------------------------
@@ -84,8 +102,7 @@ app.post('/api/generate', async (req, res) => {
         */
 
         const model = genAI.getGenerativeModel({
-            model: "google/gemini-flash-1.5"
-            //model: "gemini-1.5-flash-001"
+            model: MODEL_NAME
         });
 
         /*
@@ -99,7 +116,7 @@ You are an expert hiring manager.
 
 Generate exactly 3 thoughtful and role-specific interview questions for this role:
 
-"${jobTitle}"
+"${sanitizedJobTitle}"
 
 Rules:
 - Questions must assess practical ability
@@ -119,7 +136,14 @@ Rules:
 
         const response = await result.response;
 
-        const text = response.text();
+        const text = response.text().trim();
+
+        if (!text) {
+            return res.status(502).json({
+                success: false,
+                error: 'AI returned an empty response.'
+            });
+        }
 
         /*
         |--------------------------------------------------------------------------
@@ -127,17 +151,14 @@ Rules:
         |--------------------------------------------------------------------------
         */
 
-        const questionsArray = text
-            .split('\n')
-            .map(line => line.trim())
-            .filter(line => line.length > 0)
-            .map(line =>
-                line
-                    .replace(/^\d+\.\s*/, '')
-                    .replace(/^[-*]\s*/, '')
-                    .trim()
-            )
-            .filter(line => line.length > 0);
+        const questionsArray = parseQuestions(text);
+
+        if (questionsArray.length !== 3) {
+            return res.status(502).json({
+                success: false,
+                error: 'AI returned an unexpected response format.'
+            });
+        }
 
         /*
         |--------------------------------------------------------------------------
@@ -147,7 +168,7 @@ Rules:
 
         return res.json({
             success: true,
-            jobTitle,
+            jobTitle: sanitizedJobTitle,
             questions: questionsArray
         });
 
@@ -159,6 +180,24 @@ Rules:
             error: 'Failed to generate interview questions.'
         });
     }
+});
+
+app.use((error, req, res, next) => {
+    if (error instanceof SyntaxError && 'body' in error) {
+        return res.status(400).json({
+            success: false,
+            error: 'Request body must be valid JSON.'
+        });
+    }
+
+    if (error.type === 'entity.too.large') {
+        return res.status(413).json({
+            success: false,
+            error: 'Request body is too large.'
+        });
+    }
+
+    next(error);
 });
 
 /*
